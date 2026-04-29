@@ -98,8 +98,17 @@ class QiPowerClient:
         log.info("QiPower client started against %s", self.ip)
 
     def _initial_probe(self) -> None:
-        # Seed UI with the device's current values so users don't see "—" or
-        # a default-50 slider that doesn't match reality.
+        # Force the LED on at start, matching the official app
+        # (StreamSelf.lambda$startStream$0 calls TriggerLed(0, 1) on every
+        # stream start). The device exposes no LED read-back, so this gives
+        # us a known, advertised state instead of leaving the toggle stuck
+        # at "unknown".
+        try:
+            self.set_led(True)
+        except Exception as e:  # noqa: BLE001
+            log.debug("initial LED set failed: %s", e)
+        # Seed UI with the device's current brightness/battery so users don't
+        # see a default-50 slider or a "—" battery that doesn't match reality.
         try:
             self.get_brightness()
         except Exception as e:  # noqa: BLE001
@@ -112,6 +121,11 @@ class QiPowerClient:
     def stop(self) -> None:
         if not self._running:
             return
+        # Match the official app: LED off on stream stop.
+        try:
+            self.set_led(False)
+        except Exception as e:  # noqa: BLE001
+            log.debug("LED-off on stop failed: %s", e)
         self._running = False
         if self._img_sock is not None:
             try:
