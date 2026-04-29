@@ -1,7 +1,8 @@
-# qipower
+# qi-earpick-app.py
 
-QiPower (Maxevis QE-1 系) Wi-Fi 耳かきカメラのプロトコルを再実装した
-Flask ビューア + 録画ツール。公式アプリ `com.molink.john.qipower` 非依存。
+**サードパーティ実装 (unofficial)**。QiPower (Maxevis QE-1 系) Wi-Fi 耳かきカメラの
+プロトコルを再実装した Flask ビューア + 録画ツール。公式アプリ
+`com.molink.john.qipower` 非依存。
 
 プロトコル仕様: [docs/protocol.md](docs/protocol.md)
 最小再現 (依存なし): [scripts/grab_frame.py](scripts/grab_frame.py)
