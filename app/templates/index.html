@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QiPower viewer</title>
+  <link href="{{ url_for('static', filename='bootstrap.min.css') }}" rel="stylesheet">
+  <style>
+    .stage { background: #111; border-radius: .5rem; position: relative; padding: .5rem; }
+    .lens {
+      width: 100%;
+      aspect-ratio: 1/1;
+      max-width: 600px;
+      margin: 0 auto;
+      clip-path: circle(50%);
+      -webkit-clip-path: circle(50%);
+      overflow: hidden;
+      background: #000;
+    }
+    .lens img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      transform: rotate(var(--angle, 0deg));
+      transition: transform 80ms linear;
+      transform-origin: center;
+    }
+    .stage.no-signal .lens img { opacity: .25; }
+    .stage .overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+                      color: #ddd; pointer-events: none; }
+    .stage.no-signal .overlay { display: flex; }
+    .stage.rotation-off .lens img { transform: none !important; transition: none; }
+    .meta { font-variant-numeric: tabular-nums; }
+    .recordings .item { display: flex; gap: .75rem; align-items: center; padding: .25rem 0; }
+    .recordings .item img { width: 48px; height: 48px; object-fit: cover; border-radius: .25rem; background: #222; }
+  </style>
+</head>
+<body class="bg-light">
+  <nav class="navbar navbar-dark bg-dark mb-3">
+    <div class="container-fluid">
+      <span class="navbar-brand mb-0 h5">QiPower viewer</span>
+      <span class="text-light meta small" id="status-line">connecting...</span>
+    </div>
+  </nav>
+
+  <main class="container pb-5">
+    <div class="row g-3">
+      <div class="col-lg-8">
+        <div class="stage" id="stage">
+          <div class="lens">
+            <img src="/stream" alt="live stream" id="live">
+          </div>
+          <div class="overlay">
+            <div class="text-center">
+              <div class="fs-5 mb-2">no signal</div>
+              <div class="small text-muted">device idle / disconnected</div>
+            </div>
+          </div>
+        </div>
+        <div class="d-flex gap-2 mt-2 align-items-center flex-wrap">
+          <button class="btn btn-outline-secondary btn-sm" id="btn-snap">Snapshot</button>
+          <button class="btn btn-outline-danger btn-sm" id="btn-rec">Record</button>
+          <button class="btn btn-outline-primary btn-sm" id="btn-reconnect">Reconnect</button>
+          <div class="form-check form-switch ms-2 mb-0">
+            <input class="form-check-input" type="checkbox" id="rot-toggle" checked>
+            <label class="form-check-label small" for="rot-toggle">Auto-rotate</label>
+          </div>
+          <span class="meta small text-muted ms-auto" id="rec-meta"></span>
+        </div>
+      </div>
+
+      <div class="col-lg-4">
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6 class="card-title mb-3">Light</h6>
+            <div class="form-check form-switch mb-3">
+              <input class="form-check-input" type="checkbox" id="led-toggle">
+              <label class="form-check-label" for="led-toggle">LED</label>
+            </div>
+            <label for="brightness" class="form-label small mb-1">Brightness <span id="brightness-val" class="meta">50</span></label>
+            <input type="range" class="form-range" id="brightness" min="0" max="100" value="50">
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6 class="card-title">Battery</h6>
+            <div class="meta" id="battery">—</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body recordings">
+            <h6 class="card-title">Recordings</h6>
+            <div id="rec-list" class="small"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(`${path}: ${r.status}`);
+  return r.json();
+}
+
+async function postJSON(path, body) {
+  return api(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {}),
+  });
+}
+
+$('#led-toggle').addEventListener('change', (e) => {
+  postJSON('/api/led', { on: e.target.checked }).catch(console.error);
+});
+
+const bSlider = $('#brightness');
+const bVal = $('#brightness-val');
+let bTimer = null;
+bSlider.addEventListener('input', () => {
+  bVal.textContent = bSlider.value;
+  clearTimeout(bTimer);
+  bTimer = setTimeout(() => {
+    postJSON('/api/brightness', { value: parseInt(bSlider.value, 10) }).catch(console.error);
+  }, 150);
+});
+
+$('#btn-snap').addEventListener('click', () => {
+  // Save snapshot via download
+  const a = document.createElement('a');
+  a.href = '/snapshot.jpg?t=' + Date.now();
+  a.download = `qipower_${new Date().toISOString().replace(/[:.]/g,'-')}.jpg`;
+  a.click();
+});
+
+let isRecording = false;
+async function refreshRecording() {
+  const s = await api('/api/status');
+  isRecording = s.recording.recording;
+  const btn = $('#btn-rec');
+  btn.classList.toggle('btn-outline-danger', !isRecording);
+  btn.classList.toggle('btn-danger', isRecording);
+  btn.textContent = isRecording ? 'Stop' : 'Record';
+  if (isRecording) {
+    $('#rec-meta').textContent = `${s.recording.frames} frames · ${s.recording.duration.toFixed(1)}s`;
+  } else {
+    $('#rec-meta').textContent = '';
+  }
+  const idle = s.client.idle_seconds;
+  const noSignal = idle === null || idle > 3;
+  $('#stage').classList.toggle('no-signal', noSignal);
+  const idleStr = idle === null ? 'no frames yet' : `${idle.toFixed(1)}s idle`;
+  // Per-frame angle is already in degrees (the Bebird SDK passes it straight
+  // to setRotate()). Range can exceed 360 — CSS handles that fine.
+  const angleRaw = s.client.angle ?? 0;
+  document.documentElement.style.setProperty('--angle', `${angleRaw}deg`);
+  $('#status-line').textContent =
+    `${s.client.frames_seen} seen · ${s.client.frames_dropped} drop · subs=${s.client.subscribers} · ${idleStr} · θ=${angleRaw}°`;
+}
+
+$('#rot-toggle').addEventListener('change', (e) => {
+  $('#stage').classList.toggle('rotation-off', !e.target.checked);
+});
+
+$('#btn-reconnect').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = '...';
+  try {
+    await postJSON('/api/reconnect');
+    // Re-attach the <img> so the browser opens a fresh /stream connection
+    const img = $('#live');
+    img.src = '/stream?t=' + Date.now();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+    refreshRecording();
+  }
+});
+
+$('#btn-rec').addEventListener('click', async () => {
+  if (isRecording) {
+    await postJSON('/api/recordings/stop');
+  } else {
+    await postJSON('/api/recordings/start');
+  }
+  refreshRecording();
+  refreshRecList();
+});
+
+async function refreshRecList() {
+  const r = await api('/api/recordings');
+  const el = $('#rec-list');
+  if (!r.recordings.length) { el.textContent = '(none)'; return; }
+  el.innerHTML = '';
+  for (const item of r.recordings) {
+    const row = document.createElement('div');
+    row.className = 'item';
+    const sizeKB = (item.size_bytes / 1024).toFixed(0);
+    row.innerHTML = `
+      <img src="/api/recordings/${item.name}/preview.jpg" alt="">
+      <div class="flex-grow-1">
+        <div>${item.name}</div>
+        <div class="text-muted small">${sizeKB} KB</div>
+      </div>
+      <a class="btn btn-sm btn-outline-secondary" href="/api/recordings/${item.name}/download">DL</a>
+    `;
+    el.appendChild(row);
+  }
+}
+
+async function refreshBattery() {
+  try {
+    const b = await api('/api/battery');
+    $('#battery').textContent = `raw=0x${b.hex} · status=${b.status} · value=${b.value}`;
+  } catch (_) {
+    $('#battery').textContent = '(no reply)';
+  }
+}
+
+refreshRecording();
+refreshRecList();
+refreshBattery();
+setInterval(refreshRecording, 200);  // also drives the rotation angle
+setInterval(refreshBattery, 30000);
+</script>
+</body>
+</html>
