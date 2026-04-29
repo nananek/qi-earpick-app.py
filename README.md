@@ -14,7 +14,7 @@
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python run.py
-# → http://127.0.0.1:5000 を開く
+# → http://127.0.0.1:5050 を開く
 ```
 
 環境変数:
@@ -24,7 +24,7 @@ python run.py
 | `QIPOWER_IP` | `192.168.5.1` | デバイス IP |
 | `QIPOWER_REC_DIR` | `recordings` | 録画保存先 |
 | `HOST` | `127.0.0.1` | Flask bind host |
-| `PORT` | `5000` | Flask port |
+| `PORT` | `5050` | Flask port (5000 を避ける: macOS Monterey 以降の AirPlay Receiver と衝突) |
 
 ## 機能
 
