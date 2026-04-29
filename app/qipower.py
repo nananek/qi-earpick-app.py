@@ -69,6 +69,13 @@ class QiPowerClient:
         self._frames_seen = 0
         self._frames_dropped = 0
         self._last_frame_at: float = 0.0
+        # The device exposes no read-back for LED state, so we mirror what we
+        # last commanded. None until the user (or the resync probe below) sets
+        # a known value.
+        self._led_state: Optional[bool] = None
+        self._brightness: Optional[int] = None
+        self._battery: Optional[dict] = None
+        self._battery_at: float = 0.0
 
     def start(self) -> None:
         if self._running:
@@ -87,7 +94,20 @@ class QiPowerClient:
             self._img_sock.send(CMD_START_VIDEO)
         except OSError as e:
             log.warning("initial START_VIDEO failed: %s", e)
+        threading.Thread(target=self._initial_probe, daemon=True).start()
         log.info("QiPower client started against %s", self.ip)
+
+    def _initial_probe(self) -> None:
+        # Seed UI with the device's current values so users don't see "—" or
+        # a default-50 slider that doesn't match reality.
+        try:
+            self.get_brightness()
+        except Exception as e:  # noqa: BLE001
+            log.debug("initial brightness probe failed: %s", e)
+        try:
+            self.get_battery()
+        except Exception as e:  # noqa: BLE001
+            log.debug("initial battery probe failed: %s", e)
 
     def stop(self) -> None:
         if not self._running:
@@ -143,6 +163,7 @@ class QiPowerClient:
                 self._img_sock.send(CMD_START_VIDEO)
             except OSError as e:
                 log.warning("reconnect START_VIDEO failed: %s", e)
+            threading.Thread(target=self._initial_probe, daemon=True).start()
             log.info("reconnect: image socket rebuilt")
 
     def _make_image_socket(self) -> socket.socket:
@@ -295,6 +316,9 @@ class QiPowerClient:
             "ip": self.ip,
             "idle_seconds": idle,
             "angle": self._latest_angle,
+            "led": self._led_state,
+            "brightness": self._brightness,
+            "battery": self._battery,
         }
 
     def _cmd(self, payload: bytes, expect_reply: bool = False) -> Optional[bytes]:
@@ -317,21 +341,38 @@ class QiPowerClient:
     def set_led(self, on: bool) -> None:
         # 0x66 0x3F 0x00 <state>  — byte 3 = state (1=on, 0=off)
         self._cmd(CMD_TRIGGER_LED + bytes([0x00, 1 if on else 0]))
+        self._led_state = on
 
     def set_brightness(self, value: int) -> None:
         v = max(0, min(100, int(value)))
         self._cmd(CMD_SET_CAM_BRIGHTNESS + bytes([v]))
+        self._brightness = v
+
+    def get_brightness(self) -> Optional[int]:
+        # 0x66 0x3C 0xFE — Java `SetCameraBrightness(-2)`: write the magic
+        # value -2 and read the device's reply (current brightness, 1 byte).
+        data = self._cmd(CMD_SET_CAM_BRIGHTNESS + bytes([0xFE]), expect_reply=True)
+        if data and 0 <= data[0] <= 100:
+            self._brightness = data[0]
+            return data[0]
+        return None
 
     def get_battery(self) -> Optional[dict]:
         data = self._cmd(CMD_GET_BAT_VOLTAGE, expect_reply=True)
         if data is None or len(data) < 4:
             return None
         raw = struct.unpack(">i", data[:4])[0]
-        # Observed: 00 01 00 17 (BE) — high16=status, low16=voltage_raw.
-        # Exact unit unconfirmed; expose raw + best-effort fields.
-        return {
+        # Observed: 00 01 00 17 (BE) — high16=status, low16=level. Exact unit
+        # unconfirmed; the level monotonically decreased toward 0 as the
+        # battery drained, so we expose it as a 0..100 percent (clamped).
+        level = raw & 0xFFFF
+        info = {
             "raw": raw,
             "hex": data[:4].hex(),
             "status": (raw >> 16) & 0xFFFF,
-            "value": raw & 0xFFFF,
+            "level": level,
+            "percent": max(0, min(100, level)),
         }
+        self._battery = info
+        self._battery_at = time.time()
+        return info
